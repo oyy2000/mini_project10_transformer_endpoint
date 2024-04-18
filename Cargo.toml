@@ -1,16 +1,16 @@
 [package]
-name = "mini10"
+name = "mini_project10"
 version = "0.1.0"
 edition = "2021"
 
+
 [dependencies]
 lambda_http = "0.11.1"
-lambda_runtime = "0.11.1"
-tokio = { version = "1", features = ["macros"] }
-serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = {version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rust-bert = "0.21.0"
-tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt"] }
-serde_urlencoded = "0.7"
-anyhow = "1.0.0"
+llm = { git = "https://github.com/rustformers/llm" , branch = "main" }
+rand = "0.8.5"
+openssl = { version = "0.10.35", features = ["vendored"] }
+
+

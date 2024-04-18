@@ -1,48 +1,30 @@
-# Use an official Rust image
-FROM rust:1.75 as builder
+# Use the cargo-lambda image for building
+FROM ghcr.io/cargo-lambda/cargo-lambda:latest as builder
 
-RUN apt-get update
-RUN apt-get install -y build-essential cmake curl openssl libssl-dev
+# Create a directory for your application
+WORKDIR /usr/src/app
 
-ARG LIBTORCH_URL=https://download.pytorch.org/libtorch/cu118/libtorch-cxx11-abi-shared-with-deps-2.0.0%2Bcu118.zip
+# Copy your source code into the container
+COPY . .
 
-RUN curl -L ${LIBTORCH_URL} -o libtorch.zip && \
-    unzip libtorch.zip -d / && \
-    rm libtorch.zip
+# Build the Lambda function using cargo-lambda
+RUN cargo lambda build --release --arm64
 
-ENV LIBTORCH=/libtorch
-ENV LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
+# Use a new stage for the final image
+# copy artifacts to a clean image
+FROM public.ecr.aws/lambda/provided:al2-arm64
 
-# Create a new empty shell project
-RUN USER=root cargo new mini10
-WORKDIR /mini10
+# Create a directory for your lambda function
+WORKDIR /mini_project10
 
-# Copy the manifests
-COPY ./Cargo.lock ./Cargo.lock
-COPY ./Cargo.toml ./Cargo.toml
+# Copy the bootstrap binary from the builder stage
+COPY --from=builder /usr/src/app/target/ ./ 
+# Copy the llama model here 
+COPY --from=builder /usr/src/app/src/pythia-1b-q4_0-ggjt.bin ./ 
 
-# This is a dummy build to get the dependencies cached
-RUN cargo build --release
-RUN rm src/*.rs
+# Check to make sure files are there 
+RUN if [ -d /mini_project10/lambda/transformer/ ]; then echo "Directory '/mini_project10' exists"; else echo "Directory '/mini_project10' does not exist"; fi
+RUN if [ -f /mini_project10/lambda/transformer/bootstrap]; then echo "File '/mini_project10/lambda/lambda/bootstrap' exists"; else echo "File '/mini_project10/lambda/lambda/bootstrap' does not exist"; fi
 
-# Now that the dependencies are built, copy your source code
-COPY ./src ./src
-
-# Build for release
-RUN rm ./target/release/deps/mini10*
-RUN cargo build --release
-
-# test
-RUN cargo test -v
-
-# Final stage
-FROM debian:bookworm-slim
-RUN apt-get update
-RUN apt-get install -y build-essential cmake curl openssl libssl-dev
-COPY --from=builder /mini10/target/release/mini10 .
-COPY --from=builder /libtorch/ /libtorch/
-ENV LIBTORCH=/libtorch
-ENV LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
-ENV ROCKET_ADDRESS=0.0.0.0
-CMD ["./mini10"]
-
+# Set the entrypoint for the Lambda function
+ENTRYPOINT ["/mini_project10/lambda/transformer/bootstrap"]

@@ -1,53 +1,79 @@
-use anyhow::Result;
-use lambda_http::{run, service_fn, Body, Error, Request, Response};
-use rust_bert::pipelines::sentiment::SentimentModel;
-use std::collections::HashMap;
-use tokio::task;
-use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+use lambda_http::{run, service_fn, tracing, Body, Error, Request, RequestExt, Response};
+use std::convert::Infallible;
+use std::io::Write;
+use std::path::PathBuf;
 
-async fn function_handler(event: Request) -> Result<Response<Body>, Error> {
-    let query_params = event.uri().query().unwrap_or("");
-    let query_map: HashMap<String, String> =
-        serde_urlencoded::from_str(query_params).expect("Invalid query");
-    let input_res = match query_map.get("text") {
-        Some(input) => input,
-        None => {
-            let resp = Response::builder()
-                .status(500)
-                .header("content-type", "text/html")
-                .body(("invalid format").into())
-                .map_err(Box::new)?;
-            return Ok(resp);
-        }
+fn generate_response(prompt: String) -> Result<String, Box<dyn std::error::Error>> {
+    // Set the model's details and the tokenizer
+    let tokenizer = llm::TokenizerSource::Embedded;
+    let architecture = llm::ModelArchitecture::GptNeoX;
+
+    // Define model's path based on environment
+    let model_file = PathBuf::from("src/pythia-1b-q4_0-ggjt.bin");
+
+    let model = llm::load_dynamic(
+        Some(architecture),
+        &model_file,
+        tokenizer,
+        Default::default(),
+        llm::load_progress_callback_stdout,
+    )?;
+
+    let mut session = model.start_session(Default::default());
+    let mut response_text = String::new();
+
+    let inference_result = session.infer::<Infallible>(
+        model.as_ref(),
+        &mut rand::thread_rng(),
+        &llm::InferenceRequest {
+            prompt: (&prompt).into(),
+            parameters: &llm::InferenceParameters::default(),
+            play_back_previous_tokens: false,
+            maximum_token_count: Some(15),
+        },
+        &mut Default::default(),
+        |response| match response {
+            llm::InferenceResponse::PromptToken(token)
+            | llm::InferenceResponse::InferredToken(token) => {
+                print!("{token}");
+                std::io::stdout().flush().unwrap();
+                response_text.push_str(&token);
+                Ok(llm::InferenceFeedback::Continue)
+            }
+            _ => Ok(llm::InferenceFeedback::Continue),
+        },
+    );
+
+    // Handle inference result
+    match inference_result {
+        Ok(_) => Ok(response_text),
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+async fn handle_request(req: Request) -> Result<Response<Body>, Error> {
+    let user_query = req
+        .query_string_parameters_ref()
+        .and_then(|params| params.first("query"))
+        .unwrap_or("Today is a");
+
+    let output_message = match generate_response(user_query.to_string()) {
+        Ok(result) => result,
+        Err(e) => format!("Inference error: {:?}", e),
     };
-    let input_data = input_res.clone();
-    let res_data = task::spawn_blocking(move || {
-        let sentiment_classifier =
-            SentimentModel::new(Default::default()).expect("Error creating model");
-        sentiment_classifier.predict(&[input_data.as_str()])
-    })
-    .await
-    .map_err(anyhow::Error::new)?;
-    println!("{}", serde_json::to_string(&res_data[0].polarity).unwrap());
-    let resp = Response::builder()
+    println!("Response from model: {:?}", output_message);
+
+    let response = Response::builder()
         .status(200)
         .header("content-type", "text/html")
-        .body(serde_json::to_string(&res_data[0].polarity).unwrap().into())
+        .body(Body::from(output_message.replace("<|padding|>", "")))
         .map_err(Box::new)?;
-    Ok(resp)
+
+    Ok(response)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .with_target(false)
-        .without_time()
-        .init();
-
-    run(service_fn(function_handler)).await
+    tracing::init_default_subscriber();
+    run(service_fn(handle_request)).await
 }
